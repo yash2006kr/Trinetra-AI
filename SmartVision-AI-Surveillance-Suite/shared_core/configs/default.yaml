@@ -46,13 +46,19 @@ dashboard:
     - http://127.0.0.1:5173
 
 cameras:
-  - camera_id: demo_webcam
-    name: Local Webcam
+  - camera_id: webcam_0
+    name: Webcam 1
     source: "0"
     enabled: true
     fps: 15
     metadata:
-      location: demo_station
+      stream_type: webcam
+  - camera_id: webcam_1
+    name: Webcam 2
+    source: "1"
+    enabled: false
+    fps: 15
+    metadata:
       stream_type: webcam
 
 retention:

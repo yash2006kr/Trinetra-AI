@@ -107,6 +107,7 @@ class HighwayAnalytics:
                     "bbox": detection.bbox,
                     "center": center,
                     "speed_kmph": round(speed, 2),
+                    "speed_limit_kmph": self.rules.speed_limit_kmph,
                     "tags": sorted(vehicle_tags),
                 }
             )
@@ -128,7 +129,8 @@ class HighwayAnalytics:
         history.append((timestamp, center))
         if len(history) < 2:
             return 0.0
-        old_ts, old_center = history[0]
+        # Use the last two samples for responsive live speed (not the full deque span).
+        old_ts, old_center = history[-2]
         dt = max(1e-6, timestamp - old_ts)
         distance_px = ((center[0] - old_center[0]) ** 2 + (center[1] - old_center[1]) ** 2) ** 0.5
         meters = distance_px / max(1e-6, self.rules.pixels_per_meter)

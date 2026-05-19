@@ -41,8 +41,10 @@ def create_app() -> FastAPI:
 
     camera_manager = CameraManager()
     for camera in config.get("cameras", []):
-        if camera.get("enabled", False):
-            camera_manager.add_camera(CameraConfig(**camera), start=True)
+        camera_manager.add_camera(
+            CameraConfig(**camera),
+            start=bool(camera.get("enabled", False)),
+        )
 
     app.include_router(create_dashboard_router(camera_manager=camera_manager))
 

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# ML weights (download via Ultralytics on first run)
+*.pt
+
+# Local data and logs
+SmartVision-AI-Surveillance-Suite/data/
+SmartVision-AI-Surveillance-Suite/logs/
+SmartVision-AI-Surveillance-Suite/**/recordings/
+
+# Frontend build artifacts
+SmartVision-AI-Surveillance-Suite/frontend/node_modules/
+SmartVision-AI-Surveillance-Suite/frontend/dist/
+SmartVision-AI-Surveillance-Suite/frontend/.vite/
+SmartVision-AI-Surveillance-Suite/frontend/*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

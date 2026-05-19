@@ -20,12 +20,14 @@ from shared_core.dashboard.auth import require_api_key
 from shared_core.database.repository import EventRepository
 from shared_core.stream_manager.camera_manager import CameraManager
 from shared_core.utils.config import load_config
+from shared_core.vision.live_processor import LiveInferenceProcessor
 
 
 def create_dashboard_router(camera_manager: CameraManager | None = None, repository: EventRepository | None = None) -> APIRouter:
     config = load_config()
     repo = repository or EventRepository.from_config(config)
     manager = camera_manager or CameraManager()
+    camera_catalog = {item["camera_id"]: item for item in config.get("cameras", [])}
     router = APIRouter(prefix="/api", tags=["dashboard"])
 
     @router.get("/health")
@@ -74,7 +76,46 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
 
     @router.get("/cameras", dependencies=[Depends(require_api_key)])
     def cameras() -> list[dict[str, Any]]:
-        return [asdict(health) for health in manager.health()]
+        health_by_id = {health.camera_id: health for health in manager.health()}
+        active_id = manager.active_camera_id()
+        rows: list[dict[str, Any]] = []
+        for camera_id, raw in camera_catalog.items():
+            health = health_by_id.get(camera_id)
+            rows.append(
+                {
+                    "camera_id": camera_id,
+                    "name": raw.get("name") or camera_id,
+                    "source": str(raw.get("source", "")),
+                    "running": health.running if health else False,
+                    "connected": health.connected if health else False,
+                    "last_frame_ts": health.last_frame_ts if health else None,
+                    "frames_read": health.frames_read if health else 0,
+                    "failures": health.failures if health else 0,
+                    "active": camera_id == active_id,
+                }
+            )
+        if not rows:
+            return [asdict(health) for health in manager.health()]
+        return rows
+
+    @router.post("/cameras/{camera_id}/activate", dependencies=[Depends(require_api_key)])
+    def activate_camera(camera_id: str, module: str = "highway_surveillance") -> dict[str, Any]:
+        activated = manager.activate_only(camera_id)
+        if activated:
+            LiveInferenceProcessor.get(module).reset_tracking()
+        return {"camera_id": camera_id, "activated": activated, "active": manager.active_camera_id()}
+
+    @router.post("/cameras/{camera_id}/pause", dependencies=[Depends(require_api_key)])
+    def pause_camera(camera_id: str) -> dict[str, Any]:
+        paused = manager.pause(camera_id)
+        return {"camera_id": camera_id, "paused": paused}
+
+    @router.post("/cameras/{camera_id}/resume", dependencies=[Depends(require_api_key)])
+    def resume_camera(camera_id: str, module: str = "highway_surveillance") -> dict[str, Any]:
+        resumed = manager.resume(camera_id)
+        if resumed:
+            LiveInferenceProcessor.get(module).reset_tracking()
+        return {"camera_id": camera_id, "resumed": resumed}
 
     @router.get("/storage", dependencies=[Depends(require_api_key)])
     def storage() -> dict[str, Any]:
@@ -98,22 +139,107 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
 
     @router.websocket("/ws/live/{camera_id}")
     async def live_camera(websocket: WebSocket, camera_id: str) -> None:
+        """Plain webcam stream without AI overlays."""
+
         await websocket.accept()
         try:
             while True:
+                health = next((item for item in manager.health() if item.camera_id == camera_id), None)
+                if health is None or not health.running:
+                    await websocket.send_text(json.dumps({"camera_id": camera_id, "paused": True}))
+                    await asyncio.sleep(0.3)
+                    continue
+
                 ok, frame, ts = manager.read(camera_id)
                 if ok and frame is not None:
-                    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "camera_id": camera_id,
                                 "timestamp": ts,
+                                "paused": False,
                                 "jpeg_base64": base64.b64encode(buffer).decode("ascii"),
                             }
                         )
                     )
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(0.05)
+        except WebSocketDisconnect:
+            return
+
+    @router.websocket("/ws/tracking/{camera_id}")
+    async def tracking_camera(websocket: WebSocket, camera_id: str, module: str = "highway_surveillance") -> None:
+        """YOLO + OpenCV annotated stream for the active surveillance module."""
+
+        await websocket.accept()
+        processor = LiveInferenceProcessor.get(module)
+        try:
+            while True:
+                health = next((item for item in manager.health() if item.camera_id == camera_id), None)
+                if health is None or not health.running:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "camera_id": camera_id,
+                                "module": module,
+                                "paused": True,
+                                "detections": None,
+                            }
+                        )
+                    )
+                    await asyncio.sleep(0.3)
+                    continue
+
+                ok, frame, ts = manager.read(camera_id)
+                if ok and frame is not None:
+                    output = frame
+                    detection_summary: dict[str, Any] = {"detection_count": 0, "model_ready": processor.detector.loaded}
+                    try:
+                        if not processor.detector.loaded:
+                            ok_preview, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                            if ok_preview:
+                                await websocket.send_text(
+                                    json.dumps(
+                                        {
+                                            "camera_id": camera_id,
+                                            "module": module,
+                                            "timestamp": ts,
+                                            "paused": False,
+                                            "jpeg_base64": base64.b64encode(buf).decode("ascii"),
+                                            "detections": {"detection_count": 0, "loading": True},
+                                        }
+                                    )
+                                )
+                        output, detection_summary = await asyncio.to_thread(processor.process, frame, camera_id, ts)
+                        detection_summary["model_ready"] = True
+                        detection_summary.pop("loading", None)
+                    except Exception as exc:
+                        output = frame.copy()
+                        cv2.putText(
+                            output,
+                            f"Detection error: {exc}"[:80],
+                            (12, 28),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55,
+                            (0, 0, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                        detection_summary = {"detection_count": 0, "error": str(exc), "model_ready": False}
+                    _, buffer = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "camera_id": camera_id,
+                                "module": module,
+                                "timestamp": ts,
+                                "paused": False,
+                                "jpeg_base64": base64.b64encode(buffer).decode("ascii"),
+                                "detections": detection_summary,
+                            }
+                        )
+                    )
+                await asyncio.sleep(0.05)
         except WebSocketDisconnect:
             return
 

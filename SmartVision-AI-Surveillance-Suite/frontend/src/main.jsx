@@ -15,6 +15,7 @@ import {
   Radio,
   RefreshCw,
   Save,
+  Scan,
   Search,
   Settings,
   Shield,
@@ -62,6 +63,16 @@ async function apiPost(path) {
   return response.json();
 }
 
+async function setCameraPaused(cameraId, paused, moduleName) {
+  const action = paused ? "pause" : "resume";
+  const query = paused ? "" : `?module=${encodeURIComponent(moduleName)}`;
+  return apiPost(`/api/cameras/${cameraId}/${action}${query}`);
+}
+
+async function activateCamera(cameraId, moduleName) {
+  return apiPost(`/api/cameras/${cameraId}/activate?module=${encodeURIComponent(moduleName)}`);
+}
+
 function useApi(path, fallback, interval = 5000) {
   const [data, setData] = useState(fallback);
   const [error, setError] = useState(null);
@@ -106,34 +117,80 @@ function formatBytes(value) {
   return `${size.toFixed(idx < 2 ? 0 : 1)} ${units[idx]}`;
 }
 
-function LiveTile({ camera, onOpen }) {
+function LiveTile({ camera, moduleName, useTracking = false, onOpen }) {
   const cameraId = camera.camera_id;
   const [image, setImage] = useState(null);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState(true);
+  const [paused, setPaused] = useState(false);
+  const [detections, setDetections] = useState(null);
+  const [toggleBusy, setToggleBusy] = useState(false);
 
   useEffect(() => {
     if (!cameraId || !streaming) return undefined;
     const wsBase = API_BASE.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsBase}/api/ws/live/${cameraId}`);
+    const wsUrl = useTracking
+      ? `${wsBase}/api/ws/tracking/${cameraId}?module=${encodeURIComponent(moduleName)}`
+      : `${wsBase}/api/ws/live/${cameraId}`;
+    const socket = new WebSocket(wsUrl);
     socket.onmessage = (event) => {
       const payload = JSON.parse(event.data);
+      if (payload.paused) {
+        setPaused(true);
+        setImage(null);
+        setDetections(null);
+        setConnected(false);
+        return;
+      }
+      setPaused(false);
       setImage(`data:image/jpeg;base64,${payload.jpeg_base64}`);
+      setDetections(useTracking ? payload.detections || null : null);
       setConnected(true);
     };
     socket.onerror = () => setConnected(false);
     socket.onclose = () => setConnected(false);
     return () => socket.close();
-  }, [cameraId, streaming]);
+  }, [cameraId, streaming, moduleName, useTracking]);
+
+  async function toggleStream() {
+    if (!cameraId || toggleBusy) return;
+    setToggleBusy(true);
+    try {
+      if (streaming) {
+        await setCameraPaused(cameraId, true, moduleName);
+        setStreaming(false);
+        setPaused(true);
+        setImage(null);
+        setDetections(null);
+        setConnected(false);
+      } else {
+        await setCameraPaused(cameraId, false, moduleName);
+        setPaused(false);
+        setStreaming(true);
+      }
+    } catch {
+      setConnected(false);
+    } finally {
+      setToggleBusy(false);
+    }
+  }
+
+  const speedHud = useTracking && moduleName === "highway_surveillance" && detections?.speed_limit_kmph != null;
 
   return (
-    <div className="live-tile">
+    <div className={`live-tile ${useTracking ? "tracking-mode" : ""}`}>
       <div className="tile-toolbar">
-        <span className={connected || camera.connected ? "status online" : "status"}>
-          <Radio size={14} /> {cameraId}
+        <span className={connected && !paused ? "status online" : "status"}>
+          <Radio size={14} /> {paused ? `${cameraId} (paused)` : cameraId}
+          {useTracking && !paused && <small className="tracking-badge">YOLO</small>}
         </span>
         <div className="tile-actions">
-          <button aria-label={streaming ? "pause stream" : "play stream"} title={streaming ? "Pause stream" : "Play stream"} onClick={() => setStreaming(!streaming)}>
+          <button
+            aria-label={streaming ? "pause camera" : "start camera"}
+            title={streaming ? "Pause camera" : "Start camera"}
+            disabled={toggleBusy}
+            onClick={toggleStream}
+          >
             {streaming ? <Pause size={15} /> : <Play size={15} />}
           </button>
           <button aria-label="open live viewer" title="Open live viewer" onClick={() => onOpen(camera)}>
@@ -141,7 +198,33 @@ function LiveTile({ camera, onOpen }) {
           </button>
         </div>
       </div>
-      {image ? <img src={image} alt={`${cameraId} live`} /> : <div className="video-placeholder"><Video size={36} /><span>Waiting for webcam</span></div>}
+      {image ? (
+        <img src={image} alt={useTracking ? `${cameraId} YOLO tracking` : `${cameraId} live webcam`} />
+      ) : (
+        <div className={`video-placeholder ${paused ? "paused" : ""}`}>
+          <Video size={36} />
+          <span>
+            {paused
+              ? "Camera paused - press Play to turn on"
+              : useTracking
+                ? "Loading webcam and YOLO model..."
+                : "Waiting for webcam"}
+          </span>
+        </div>
+      )}
+      {detections && !paused && (
+        <div className={`detection-hud ${detections.violations ? "has-violations" : ""}`}>
+          {speedHud ? (
+            <>
+              <span>Limit {detections.speed_limit_kmph} km/h</span>
+              <span>Max {detections.max_speed_kmph ?? 0} km/h</span>
+            </>
+          ) : (
+            <span>{detections.detection_count} detected</span>
+          )}
+          {detections.violations > 0 && <span className="violation-pill">{detections.violations} alert</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -258,17 +341,40 @@ function ModelControls({ selectedModule, onClose }) {
   );
 }
 
-function LiveViewer({ camera, onClose }) {
+function LiveViewer({ camera, moduleName, useTracking, onClose }) {
   return (
-    <Modal title={`Live Viewer - ${camera.camera_id}`} onClose={onClose}>
-      <div className="viewer-frame">
-        <LiveTile camera={camera} onOpen={() => {}} />
+    <Modal title={`${useTracking ? "YOLO tracking" : "Webcam"} — ${camera.name || camera.camera_id}`} onClose={onClose}>
+      <div className="viewer-frame viewer-frame-large">
+        <LiveTile camera={camera} moduleName={moduleName} useTracking={useTracking} onOpen={() => {}} />
       </div>
     </Modal>
   );
 }
 
 function EventDetails({ event, onClose }) {
+  const [clipSrc, setClipSrc] = useState(null);
+
+  useEffect(() => {
+    let objectUrl;
+    if (!event.clip_exists) {
+      setClipSrc(null);
+      return undefined;
+    }
+    async function loadClip() {
+      const response = await fetch(`${API_BASE}/api/events/${event.event_id}/clip`, {
+        headers: { "x-api-key": API_KEY },
+      });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      objectUrl = URL.createObjectURL(blob);
+      setClipSrc(objectUrl);
+    }
+    loadClip();
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [event.event_id, event.clip_exists]);
+
   return (
     <Modal title={`Event ${event.event_id.slice(0, 8)}`} onClose={onClose}>
       <div className="event-detail">
@@ -276,7 +382,11 @@ function EventDetails({ event, onClose }) {
         <p><strong>Camera:</strong> {event.camera_id}</p>
         <p><strong>Score:</strong> {Math.round(event.score * 100)}%</p>
         <p><strong>Tags:</strong> {event.tags.join(", ") || "motion"}</p>
-        <p><strong>Clip:</strong> {event.clip_exists ? "Available" : "No video clip for this demo event"}</p>
+        {clipSrc ? (
+          <video className="event-clip" controls src={clipSrc} />
+        ) : (
+          <p className="panel-help">No video file for this row. Test Event rows are database-only. Real clips need the Python pipeline.</p>
+        )}
       </div>
     </Modal>
   );
@@ -290,6 +400,8 @@ function App() {
   const [selectedCamera, setSelectedCamera] = useState(null);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [toast, setToast] = useState("");
+  const [detectionOn, setDetectionOn] = useState(true);
+  const [viewerTracking, setViewerTracking] = useState(true);
 
   const { data: events } = useApi(`/api/events?module=${selectedModule}&limit=80&refresh=${refreshKey}`, []);
   const { data: alerts } = useApi(`/api/alerts?limit=40&refresh=${refreshKey}`, []);
@@ -302,7 +414,31 @@ function App() {
     [summary]
   );
 
-  const cameraList = cameras.length ? cameras : [{ camera_id: "demo_webcam", connected: false, running: true }];
+  const cameraList = cameras.length ? cameras : [{ camera_id: "webcam_0", name: "Webcam 1", connected: false, running: true, active: true }];
+  const activeCamera = cameraList.find((camera) => camera.active) || cameraList[0];
+  const [selectedCameraId, setSelectedCameraId] = useState(activeCamera?.camera_id || "webcam_0");
+
+  useEffect(() => {
+    if (activeCamera?.camera_id && activeCamera.camera_id !== selectedCameraId) {
+      setSelectedCameraId(activeCamera.camera_id);
+    }
+  }, [activeCamera?.camera_id]);
+
+  const displayCamera = cameraList.find((camera) => camera.camera_id === selectedCameraId) || activeCamera;
+
+  async function switchWebcam(cameraId) {
+    if (!cameraId || cameraId === selectedCameraId) return;
+    try {
+      await activateCamera(cameraId, selectedModule);
+      setSelectedCameraId(cameraId);
+      setToast(`Switched to ${cameraList.find((c) => c.camera_id === cameraId)?.name || cameraId}`);
+      setRefreshKey((value) => value + 1);
+      setTimeout(() => setToast(""), 2000);
+    } catch {
+      setToast("Could not switch webcam");
+      setTimeout(() => setToast(""), 2500);
+    }
+  }
   const filteredEvents = events.filter((event) => {
     const haystack = `${event.event_id} ${event.module} ${event.camera_id} ${(event.tags || []).join(" ")}`.toLowerCase();
     return haystack.includes(filterText.toLowerCase());
@@ -310,12 +446,12 @@ function App() {
   const usedPct = storage.disk_total_bytes ? Math.round((storage.disk_used_bytes / storage.disk_total_bytes) * 100) : 0;
 
   async function runDemoAction(kind) {
-    const cameraId = cameraList[0]?.camera_id || "demo_webcam";
+    const cameraId = selectedCameraId || cameraList[0]?.camera_id || "webcam_0";
     const path = kind === "alert"
       ? `/api/demo/alert?module=${selectedModule}&camera_id=${cameraId}`
       : `/api/demo/event?module=${selectedModule}&camera_id=${cameraId}`;
     await apiPost(path);
-    setToast(kind === "alert" ? "Demo alert created" : "Demo event created");
+    setToast(kind === "alert" ? "Test alert added to the list" : "Test event added to the table");
     setRefreshKey((value) => value + 1);
     setTimeout(() => setToast(""), 2500);
   }
@@ -347,8 +483,8 @@ function App() {
           </div>
           <div className="actions">
             <div className="search"><Search size={16} /><input value={filterText} onChange={(event) => setFilterText(event.target.value)} placeholder="Filter events" /></div>
-            <button title="Model controls" onClick={() => setActiveModal("models")}><SlidersHorizontal size={18} /></button>
-            <button title="Settings" onClick={() => setActiveModal("settings")}><Settings size={18} /></button>
+            <button type="button" title="Model controls" onClick={() => setActiveModal("models")}><SlidersHorizontal size={18} /></button>
+            <button type="button" title="Settings" onClick={() => setActiveModal("settings")}><Settings size={18} /></button>
           </div>
         </header>
 
@@ -362,30 +498,56 @@ function App() {
         </section>
 
         <section className="grid">
-          <div className="panel live-panel">
-            <div className="panel-title">
-              <span><Camera size={18} /> Live Multi-Camera View</span>
-              <button className="panel-action" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh cameras"><RefreshCw size={15} /></button>
+          <div className="panel live-panel live-panel-featured">
+            <div className="panel-title live-panel-head">
+              <span><Camera size={18} /> Live Video {detectionOn ? "+ YOLO Detection" : ""}</span>
+              <div className="live-panel-controls">
+                <label className="camera-select">
+                  <span>Webcam</span>
+                  <select value={selectedCameraId} onChange={(event) => switchWebcam(event.target.value)}>
+                    {cameraList.map((camera) => (
+                      <option key={camera.camera_id} value={camera.camera_id}>
+                        {camera.name || camera.camera_id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" className={`toggle-detection ${detectionOn ? "on" : ""}`} onClick={() => setDetectionOn(!detectionOn)}>
+                  <Scan size={15} /> {detectionOn ? "Detection ON" : "Detection OFF"}
+                </button>
+                <button type="button" className="panel-action" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh cameras">
+                  <RefreshCw size={15} />
+                </button>
+              </div>
             </div>
-            <div className="live-grid">
-              {cameraList.slice(0, 4).map((camera) => (
-                <LiveTile
-                  key={camera.camera_id}
-                  camera={camera}
-                  onOpen={(item) => {
-                    setSelectedCamera(item);
-                    setActiveModal("viewer");
-                  }}
-                />
-              ))}
-            </div>
+            <p className="panel-help">Green box = OK, red box = alert. First load may take a few seconds while YOLO starts.</p>
+            {displayCamera && (
+              <LiveTile
+                key={`${displayCamera.camera_id}-${detectionOn}`}
+                camera={displayCamera}
+                moduleName={selectedModule}
+                useTracking={detectionOn}
+                onOpen={(item) => {
+                  setSelectedCamera(item);
+                  setViewerTracking(detectionOn);
+                  setActiveModal("viewer");
+                }}
+              />
+            )}
           </div>
 
           <div className="panel alerts-panel">
             <div className="panel-title">
               <span><Bell size={18} /> Real-Time Alerts</span>
-              <button className="panel-action text" onClick={() => runDemoAction("alert")}>Simulate</button>
+              <button
+                className="panel-action text"
+                title="Inserts a fake alert into the database so you can see how the alerts panel looks"
+                onClick={() => runDemoAction("alert")}
+              >
+                Test Alert
+              </button>
             </div>
+            <p className="panel-help">Test Alert = sample notification only (not from the camera).</p>
             <div className="alert-list">
               {alerts.slice(0, 7).map((alert) => (
                 <div className={`alert priority-${alert.priority}`} key={alert.alert_id}>
@@ -418,8 +580,15 @@ function App() {
           <div className="panel events-panel">
             <div className="panel-title">
               <span><Video size={18} /> Event Playback</span>
-              <button className="panel-action text" onClick={() => runDemoAction("event")}>Demo Event</button>
+              <button
+                className="panel-action text"
+                title="Inserts a fake motion event into the database so you can see the events table"
+                onClick={() => runDemoAction("event")}
+              >
+                Test Event
+              </button>
             </div>
+            <p className="panel-help">Test Event = sample row only (not a real recording). Real clips come from the Python pipeline.</p>
             <EventTable events={filteredEvents} onSelect={(event) => setSelectedEvent(event)} />
           </div>
 
@@ -437,7 +606,14 @@ function App() {
 
       {activeModal === "settings" && <SettingsPanel cameras={cameraList} storage={storage} selectedModule={selectedModule} onClose={() => setActiveModal(null)} />}
       {activeModal === "models" && <ModelControls selectedModule={selectedModule} onClose={() => setActiveModal(null)} />}
-      {activeModal === "viewer" && selectedCamera && <LiveViewer camera={selectedCamera} onClose={() => setActiveModal(null)} />}
+      {activeModal === "viewer" && selectedCamera && (
+        <LiveViewer
+          camera={selectedCamera}
+          moduleName={selectedModule}
+          useTracking={viewerTracking}
+          onClose={() => setActiveModal(null)}
+        />
+      )}
       {selectedEvent && <EventDetails event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
     </main>
   );

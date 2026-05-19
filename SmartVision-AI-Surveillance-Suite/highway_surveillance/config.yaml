@@ -83,8 +83,8 @@ importance:
     person: 0.30
 
 rules:
-  speed_limit_kmph: 80
-  pixels_per_meter: 12
+  speed_limit_kmph: 40
+  pixels_per_meter: 8
   allowed_direction: [1.0, 0.0]
   wrong_way_min_displacement_px: 35
   parked_speed_threshold_kmph: 3
