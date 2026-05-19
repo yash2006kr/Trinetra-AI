@@ -1,0 +1,56 @@
+module:
+  name: campus_security
+  title: Campus Security
+  mode: edge
+  offline_mode: true
+  features:
+    - face_recognition_attendance
+    - unauthorized_entry_detection
+    - hostel_corridor_monitoring
+    - night_activity_detection
+
+ai:
+  model_path: yolo11n.pt
+  confidence: 0.35
+  image_size: 640
+  device: auto
+  use_half_precision: true
+  target_labels:
+    - person
+    - backpack
+
+cameras:
+  - camera_id: campus_security_demo
+    name: Campus Security Demo Camera
+    source: "0"
+    enabled: false
+    fps: 15
+    metadata:
+      location: demo
+
+motion:
+  min_area: 900
+  threshold: 25
+  blur_kernel: 5
+  history: 500
+  var_threshold: 16.0
+  detect_shadows: true
+  scene_change_threshold: 0.35
+
+recording:
+  output_dir: campus_security/recordings/clips
+  snapshot_dir: campus_security/recordings/snapshots
+  pre_event_seconds: 4.0
+  stop_timeout_seconds: 8.0
+  target_fps: 12.0
+  inactive_fps: 2.0
+  codec: mp4v
+  container: mp4
+  min_event_score: 0.18
+  snapshot_score_threshold: 0.08
+  max_clip_seconds: 300.0
+
+rules:
+  alert_cooldown_seconds: 30
+  restricted_zones: []
+  count_lines: []

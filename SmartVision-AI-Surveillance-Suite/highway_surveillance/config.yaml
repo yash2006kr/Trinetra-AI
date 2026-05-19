@@ -1,0 +1,98 @@
+module:
+  name: highway_surveillance
+  title: Highway Surveillance
+  mode: edge
+  offline_mode: true
+  features:
+    - vehicle_detection
+    - speed_estimation
+    - speed_limit_warning
+    - wrong_way_detection
+    - lane_violation_detection
+    - accident_detection
+    - illegal_parking_detection
+    - number_plate_ocr
+    - emergency_vehicle_prioritization
+    - night_vision_optimization
+
+ai:
+  model_path: yolo11n.pt
+  confidence: 0.35
+  image_size: 640
+  device: auto
+  use_half_precision: true
+  target_labels:
+    - car
+    - truck
+    - bus
+    - motorcycle
+    - bicycle
+    - person
+
+cameras:
+  - camera_id: highway_demo
+    name: Highway Demo Camera
+    source: sample_datasets/highway_demo.mp4
+    enabled: false
+    fps: 15
+    metadata:
+      location: demo_highway
+      stream_type: file
+  - camera_id: rtsp_example
+    name: RTSP Example Camera
+    source: rtsp://username:password@192.168.1.10:554/stream1
+    enabled: false
+    fps: 15
+    metadata:
+      location: gate_1
+      stream_type: rtsp
+
+motion:
+  min_area: 900
+  threshold: 25
+  blur_kernel: 5
+  history: 500
+  var_threshold: 16.0
+  detect_shadows: true
+  scene_change_threshold: 0.35
+
+recording:
+  output_dir: highway_surveillance/recordings/clips
+  snapshot_dir: highway_surveillance/recordings/snapshots
+  pre_event_seconds: 4.0
+  stop_timeout_seconds: 8.0
+  target_fps: 12.0
+  inactive_fps: 2.0
+  codec: mp4v
+  container: mp4
+  min_event_score: 0.18
+  snapshot_score_threshold: 0.08
+  minor_event_snapshot_cooldown: 30.0
+  max_clip_seconds: 300.0
+
+tracking:
+  type: bytetrack
+
+importance:
+  class_weights:
+    car: 0.25
+    truck: 0.35
+    bus: 0.35
+    motorcycle: 0.28
+    bicycle: 0.20
+    person: 0.30
+
+rules:
+  speed_limit_kmph: 40
+  pixels_per_meter: 8
+  allowed_direction: [1.0, 0.0]
+  wrong_way_min_displacement_px: 35
+  parked_speed_threshold_kmph: 3
+  illegal_parking_seconds: 45
+  alert_cooldown_seconds: 30
+  night_vision_optimization: true
+  emergency_labels:
+    - ambulance
+    - fire truck
+    - police car
+  lane_zones: []

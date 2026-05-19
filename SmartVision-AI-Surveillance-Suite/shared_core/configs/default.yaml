@@ -1,0 +1,68 @@
+app:
+  name: SmartVision AI Surveillance Suite
+  environment: dev
+  database_url: sqlite:///data/smartvision.db
+  timezone: Asia/Calcutta
+
+ai:
+  model_path: yolo11n.pt
+  confidence: 0.35
+  image_size: 640
+  device: auto
+  use_half_precision: true
+
+motion:
+  min_area: 900
+  threshold: 25
+  blur_kernel: 5
+  history: 500
+  var_threshold: 16.0
+  detect_shadows: true
+  scene_change_threshold: 0.35
+
+recording:
+  output_dir: data/recordings
+  snapshot_dir: data/snapshots
+  pre_event_seconds: 4.0
+  stop_timeout_seconds: 8.0
+  target_fps: 12.0
+  inactive_fps: 2.0
+  codec: mp4v
+  container: mp4
+  min_event_score: 0.18
+  snapshot_score_threshold: 0.08
+  minor_event_snapshot_cooldown: 30.0
+  max_clip_seconds: 300.0
+
+tracking:
+  type: bytetrack
+
+dashboard:
+  host: 0.0.0.0
+  port: 8000
+  api_key: dev-token
+  cors_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+cameras:
+  - camera_id: webcam_0
+    name: Webcam 1
+    source: "0"
+    enabled: true
+    fps: 15
+    metadata:
+      stream_type: webcam
+  - camera_id: webcam_1
+    name: Webcam 2
+    source: "1"
+    enabled: false
+    fps: 15
+    metadata:
+      stream_type: webcam
+
+retention:
+  max_age_days: 30
+  low_priority_max_age_days: 7
+  low_priority_threshold: 0.25
+  min_free_gb: 5.0

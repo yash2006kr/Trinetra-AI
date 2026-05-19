@@ -1,0 +1,66 @@
+module:
+  name: wildlife_monitoring
+  title: Wildlife Monitoring
+  mode: edge
+  offline_mode: true
+  features:
+    - animal_classification
+    - poacher_detection
+    - forest_fire_smoke_alerts
+    - zone_intrusion_alerts
+
+ai:
+  model_path: yolo11n.pt
+  confidence: 0.35
+  image_size: 640
+  device: auto
+  use_half_precision: true
+  target_labels:
+    - person
+    - bird
+    - cat
+    - dog
+    - horse
+    - sheep
+    - cow
+    - bear
+    - zebra
+    - giraffe
+    - fire
+    - smoke
+
+cameras:
+  - camera_id: wildlife_monitoring_demo
+    name: Wildlife Monitoring Demo Camera
+    source: "0"
+    enabled: false
+    fps: 15
+    metadata:
+      location: demo
+
+motion:
+  min_area: 900
+  threshold: 25
+  blur_kernel: 5
+  history: 500
+  var_threshold: 16.0
+  detect_shadows: true
+  scene_change_threshold: 0.35
+
+recording:
+  output_dir: wildlife_monitoring/recordings/clips
+  snapshot_dir: wildlife_monitoring/recordings/snapshots
+  pre_event_seconds: 4.0
+  stop_timeout_seconds: 8.0
+  target_fps: 12.0
+  inactive_fps: 2.0
+  codec: mp4v
+  container: mp4
+  min_event_score: 0.18
+  snapshot_score_threshold: 0.08
+  max_clip_seconds: 300.0
+
+rules:
+  alert_cooldown_seconds: 30
+  restricted_zones: []
+  count_lines: []
