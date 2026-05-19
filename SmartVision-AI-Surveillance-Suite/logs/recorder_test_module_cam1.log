@@ -1,0 +1,4 @@
+2026-05-17 09:34:26 | INFO     | recorder.test_module.cam1 | Started event aac03572ae314714aa84064904b8897c score=0.500 tags=['motion']
+2026-05-17 09:34:26 | INFO     | recorder.test_module.cam1 | Finished event aac03572ae314714aa84064904b8897c frames=4 score=0.500
+2026-05-17 09:49:35 | INFO     | recorder.test_module.cam1 | Started event edfb34a3c368422f9fc68ce7abe84912 score=0.500 tags=['motion']
+2026-05-17 09:49:35 | INFO     | recorder.test_module.cam1 | Finished event edfb34a3c368422f9fc68ce7abe84912 frames=4 score=0.500

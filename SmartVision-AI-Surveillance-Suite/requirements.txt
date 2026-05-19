@@ -1,0 +1,30 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+opencv-python>=4.9
+numpy>=1.26
+PyYAML>=6.0
+python-dotenv>=1.0
+SQLAlchemy>=2.0
+psycopg[binary]>=3.2
+pymongo>=4.10
+pydantic>=2.7
+requests>=2.32
+psutil>=5.9
+python-multipart>=0.0.9
+aiofiles>=23.2
+
+# AI and tracking stack
+torch>=2.2
+torchvision>=0.17
+ultralytics>=8.3
+supervision>=0.23
+deep-sort-realtime>=1.3
+
+# Optional OCR / ANPR integrations
+easyocr>=1.7
+pytesseract>=0.3
+
+# Development
+pytest>=8.0
+httpx>=0.27
+ruff>=0.6

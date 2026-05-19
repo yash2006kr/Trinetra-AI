@@ -1,0 +1,8 @@
+# Install the CUDA-specific PyTorch wheel that matches your driver first:
+# https://pytorch.org/get-started/locally/
+#
+# Example for CUDA 12.1:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# Then install the project requirements:
+-r requirements.txt

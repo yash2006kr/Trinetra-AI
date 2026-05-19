@@ -1,0 +1,4 @@
+2026-05-17 09:18:45 | INFO     | recorder.smoke.cam1 | Started event 3c947bd521d746099beb466b3889a3d6 score=0.500 tags=['motion']
+2026-05-17 09:18:45 | INFO     | recorder.smoke.cam1 | Finished event 3c947bd521d746099beb466b3889a3d6 frames=3 score=0.500
+2026-05-17 09:25:49 | INFO     | recorder.smoke.cam1 | Started event a1e52c1a3f754014af2d647bd4dd9625 score=0.500 tags=['motion']
+2026-05-17 09:25:49 | INFO     | recorder.smoke.cam1 | Finished event a1e52c1a3f754014af2d647bd4dd9625 frames=3 score=0.500

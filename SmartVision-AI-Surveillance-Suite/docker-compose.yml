@@ -1,0 +1,45 @@
+services:
+  api:
+    build: .
+    container_name: smartvision-api
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://smartvision:smartvision@postgres:5432/smartvision
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./sample_datasets:/app/sample_datasets
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: smartvision-postgres
+    environment:
+      POSTGRES_USER: smartvision
+      POSTGRES_PASSWORD: smartvision
+      POSTGRES_DB: smartvision
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  frontend:
+    image: node:22-alpine
+    container_name: smartvision-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_API_KEY: dev-token
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
