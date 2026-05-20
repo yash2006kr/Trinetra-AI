@@ -362,8 +362,72 @@ h1 {
   color: #fff;
 }
 
+.upload-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #2f80ed;
+  border-radius: 8px;
+  background: #2f80ed;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.upload-button.busy {
+  opacity: 0.66;
+  pointer-events: none;
+}
+
+.upload-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
 .viewer-frame-large .live-tile {
   min-height: 420px;
+}
+
+.video-analysis {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.video-analysis .live-tile {
+  min-height: 300px;
+}
+
+.video-analysis-head {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  background: #f8fafd;
+}
+
+.video-analysis-head strong,
+.video-analysis-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-analysis-head span {
+  color: #607086;
+  font-size: 12px;
 }
 
 .event-clip {
@@ -495,6 +559,64 @@ h1 {
   gap: 8px;
 }
 
+.alert-list.compact {
+  margin-top: 8px;
+  max-height: 250px;
+  overflow: auto;
+}
+
+.alert-divider {
+  margin: 12px 0 8px;
+  color: #607086;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.message-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.tracking-message {
+  display: grid;
+  gap: 4px;
+  border-left: 4px solid #2f80ed;
+  border-radius: 8px;
+  background: #f7faff;
+  padding: 10px 12px;
+}
+
+.tracking-message strong,
+.tracking-message span {
+  min-width: 0;
+}
+
+.tracking-message strong {
+  font-size: 13px;
+}
+
+.tracking-message span {
+  color: #526276;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.tracking-message.ok {
+  border-left-color: #12b76a;
+  background: #f1fdf7;
+}
+
+.tracking-message.warning {
+  border-left-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.tracking-message.critical {
+  border-left-color: #d92d20;
+  background: #fff5f5;
+}
+
 .alert {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -536,6 +658,32 @@ h1 {
 .heat-panel,
 .system-panel {
   min-height: 270px;
+}
+
+.analysis-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.analysis-strip span {
+  display: grid;
+  gap: 2px;
+  min-height: 52px;
+  align-content: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f8fafd;
+  color: #1a1f29;
+  font-size: 20px;
+  font-weight: 780;
+}
+
+.analysis-strip small {
+  color: #66778c;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .heatmap {
@@ -891,7 +1039,8 @@ h1 {
   }
 
   .settings-grid,
-  .model-summary {
+  .model-summary,
+  .analysis-strip {
     grid-template-columns: 1fr;
   }
 

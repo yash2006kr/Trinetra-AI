@@ -12,6 +12,7 @@ import {
   Maximize2,
   Pause,
   Play,
+  Plus,
   Radio,
   RefreshCw,
   Save,
@@ -50,6 +51,19 @@ const modules = [
   "wildlife_monitoring",
 ];
 
+const moduleProfiles = {
+  highway_surveillance: { metric: "Speed", insight: "Speed, wrong-way, lane, and parking violations" },
+  traffic_management: { metric: "Density", insight: "Vehicle count and congestion suggestions" },
+  smart_city_security: { metric: "Risk", insight: "Person activity and public-area security" },
+  retail_analytics: { metric: "Footfall", insight: "Customer movement and crowding" },
+  industrial_safety: { metric: "Safety", insight: "Worker presence and safety-zone attention" },
+  smart_parking: { metric: "Occupancy", insight: "Visible parking occupancy and lot pressure" },
+  railway_surveillance: { metric: "Track Risk", insight: "Person activity near rail zones" },
+  campus_security: { metric: "Access", insight: "Unauthorized presence candidates" },
+  home_security: { metric: "Intrusion", insight: "Person-triggered home security alerts" },
+  wildlife_monitoring: { metric: "Zone Risk", insight: "Human activity candidates in wildlife areas" },
+};
+
 function titleize(value) {
   return value.replaceAll("_", " ");
 }
@@ -58,6 +72,18 @@ async function apiPost(path) {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "x-api-key": API_KEY },
+  });
+  if (!response.ok) throw new Error(`${response.status}`);
+  return response.json();
+}
+
+async function uploadVideo(file) {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${API_BASE}/api/videos`, {
+    method: "POST",
+    headers: { "x-api-key": API_KEY },
+    body,
   });
   if (!response.ok) throw new Error(`${response.status}`);
   return response.json();
@@ -117,7 +143,7 @@ function formatBytes(value) {
   return `${size.toFixed(idx < 2 ? 0 : 1)} ${units[idx]}`;
 }
 
-function LiveTile({ camera, moduleName, useTracking = false, onOpen }) {
+function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis }) {
   const cameraId = camera.camera_id;
   const [image, setImage] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -145,6 +171,7 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen }) {
       setPaused(false);
       setImage(`data:image/jpeg;base64,${payload.jpeg_base64}`);
       setDetections(useTracking ? payload.detections || null : null);
+      if (useTracking && payload.detections) onAnalysis?.(payload.detections);
       setConnected(true);
     };
     socket.onerror = () => setConnected(false);
@@ -225,6 +252,76 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen }) {
           {detections.violations > 0 && <span className="violation-pill">{detections.violations} alert</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+function VideoAnalysisTile({ job, moduleName, onAnalysis }) {
+  const [image, setImage] = useState(null);
+  const [status, setStatus] = useState("Analyzing uploaded video...");
+  const [detections, setDetections] = useState(null);
+
+  useEffect(() => {
+    if (!job?.job_id) return undefined;
+    const wsBase = API_BASE.replace(/^http/, "ws");
+    const socket = new WebSocket(`${wsBase}/api/ws/video/${job.job_id}?module=${encodeURIComponent(moduleName)}`);
+    socket.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.error) {
+        setStatus(payload.error);
+        return;
+      }
+      if (payload.complete) {
+        setStatus("Uploaded video analysis complete");
+        return;
+      }
+      setImage(`data:image/jpeg;base64,${payload.jpeg_base64}`);
+      setDetections(payload.detections || null);
+      if (payload.detections) onAnalysis?.(payload.detections);
+      setStatus(`Frame ${(payload.detections?.frame_index ?? 0) + 1} analyzed`);
+    };
+    socket.onerror = () => setStatus("Video analysis connection failed");
+    return () => socket.close();
+  }, [job?.job_id, moduleName]);
+
+  return (
+    <div className="video-analysis">
+      <div className="video-analysis-head">
+        <strong>{job?.filename || "Uploaded sample"}</strong>
+        <span>{status}</span>
+      </div>
+      <div className="live-tile tracking-mode">
+        {image ? (
+          <img src={image} alt="Uploaded video detection stream" />
+        ) : (
+          <div className="video-placeholder">
+            <Video size={36} />
+            <span>Preparing uploaded video...</span>
+          </div>
+        )}
+        {detections && (
+          <div className={`detection-hud ${detections.violations ? "has-violations" : ""}`}>
+            <span>{detections.detection_count} detected</span>
+            {detections.max_speed_kmph != null && <span>Max {detections.max_speed_kmph} km/h</span>}
+            {detections.violations > 0 && <span className="violation-pill">{detections.violations} alert</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TrackingMessages({ messages, moduleName }) {
+  const profile = moduleProfiles[moduleName] || { metric: "Activity", insight: "Live tracking observations" };
+  const visible = messages.length ? messages.slice(0, 6) : [{ title: "Waiting for analysis", message: profile.insight, priority: "info", tag: "idle" }];
+  return (
+    <div className="message-stack">
+      {visible.map((item, idx) => (
+        <div className={`tracking-message ${item.priority || "info"}`} key={`${item.tag || item.title}-${idx}`}>
+          <strong>{item.title}</strong>
+          <span>{item.message}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -402,6 +499,10 @@ function App() {
   const [toast, setToast] = useState("");
   const [detectionOn, setDetectionOn] = useState(true);
   const [viewerTracking, setViewerTracking] = useState(true);
+  const [liveMessages, setLiveMessages] = useState([]);
+  const [lastAnalysis, setLastAnalysis] = useState(null);
+  const [videoJob, setVideoJob] = useState(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
 
   const { data: events } = useApi(`/api/events?module=${selectedModule}&limit=80&refresh=${refreshKey}`, []);
   const { data: alerts } = useApi(`/api/alerts?limit=40&refresh=${refreshKey}`, []);
@@ -424,6 +525,12 @@ function App() {
     }
   }, [activeCamera?.camera_id]);
 
+  useEffect(() => {
+    setLiveMessages([]);
+    setLastAnalysis(null);
+    setVideoJob(null);
+  }, [selectedModule]);
+
   const displayCamera = cameraList.find((camera) => camera.camera_id === selectedCameraId) || activeCamera;
 
   async function switchWebcam(cameraId) {
@@ -444,6 +551,30 @@ function App() {
     return haystack.includes(filterText.toLowerCase());
   });
   const usedPct = storage.disk_total_bytes ? Math.round((storage.disk_used_bytes / storage.disk_total_bytes) * 100) : 0;
+  const profile = moduleProfiles[selectedModule] || { metric: "Activity", insight: "Live tracking observations" };
+
+  function handleAnalysis(analysis) {
+    setLastAnalysis(analysis);
+    if (analysis.messages?.length) setLiveMessages(analysis.messages);
+  }
+
+  async function handleVideoFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || uploadBusy) return;
+    setUploadBusy(true);
+    try {
+      const job = await uploadVideo(file);
+      setVideoJob(job);
+      setToast(`Analyzing ${file.name}`);
+      setTimeout(() => setToast(""), 2500);
+    } catch {
+      setToast("Could not upload video");
+      setTimeout(() => setToast(""), 2500);
+    } finally {
+      setUploadBusy(false);
+    }
+  }
 
   async function runDemoAction(kind) {
     const cameraId = selectedCameraId || cameraList[0]?.camera_id || "webcam_0";
@@ -515,6 +646,10 @@ function App() {
                 <button type="button" className={`toggle-detection ${detectionOn ? "on" : ""}`} onClick={() => setDetectionOn(!detectionOn)}>
                   <Scan size={15} /> {detectionOn ? "Detection ON" : "Detection OFF"}
                 </button>
+                <label className={`upload-button ${uploadBusy ? "busy" : ""}`} title="Add a recorded video and analyze it live">
+                  <Plus size={15} /> Add Files
+                  <input type="file" accept="video/*" onChange={handleVideoFile} disabled={uploadBusy} />
+                </label>
                 <button type="button" className="panel-action" onClick={() => setRefreshKey((value) => value + 1)} title="Refresh cameras">
                   <RefreshCw size={15} />
                 </button>
@@ -527,6 +662,7 @@ function App() {
                 camera={displayCamera}
                 moduleName={selectedModule}
                 useTracking={detectionOn}
+                onAnalysis={handleAnalysis}
                 onOpen={(item) => {
                   setSelectedCamera(item);
                   setViewerTracking(detectionOn);
@@ -534,11 +670,12 @@ function App() {
                 }}
               />
             )}
+            {videoJob && <VideoAnalysisTile job={videoJob} moduleName={selectedModule} onAnalysis={handleAnalysis} />}
           </div>
 
           <div className="panel alerts-panel">
             <div className="panel-title">
-              <span><Bell size={18} /> Real-Time Alerts</span>
+              <span><Bell size={18} /> Tracking Messages</span>
               <button
                 className="panel-action text"
                 title="Inserts a fake alert into the database so you can see how the alerts panel looks"
@@ -547,8 +684,10 @@ function App() {
                 Test Alert
               </button>
             </div>
-            <p className="panel-help">Test Alert = sample notification only (not from the camera).</p>
-            <div className="alert-list">
+            <p className="panel-help">{profile.insight}. Test Alert is only a database simulation.</p>
+            <TrackingMessages messages={liveMessages} moduleName={selectedModule} />
+            <div className="alert-divider">Saved alerts</div>
+            <div className="alert-list compact">
               {alerts.slice(0, 7).map((alert) => (
                 <div className={`alert priority-${alert.priority}`} key={alert.alert_id}>
                   <strong>{alert.title}</strong>
@@ -560,7 +699,12 @@ function App() {
           </div>
 
           <div className="panel analytics-panel">
-            <div className="panel-title"><span><Gauge size={18} /> Analytics</span></div>
+            <div className="panel-title"><span><Gauge size={18} /> {profile.metric} Analytics</span></div>
+            <div className="analysis-strip">
+              <span>{lastAnalysis?.detection_count ?? 0}<small>detected</small></span>
+              <span>{lastAnalysis?.violations ?? 0}<small>alerts</small></span>
+              <span>{lastAnalysis?.max_speed_kmph ?? "-"}<small>{selectedModule === "highway_surveillance" ? "km/h max" : "live score"}</small></span>
+            </div>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
