@@ -151,6 +151,7 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis 
   const [paused, setPaused] = useState(false);
   const [detections, setDetections] = useState(null);
   const [toggleBusy, setToggleBusy] = useState(false);
+  const [statusText, setStatusText] = useState(useTracking ? "Loading webcam and YOLO model..." : "Waiting for webcam");
 
   useEffect(() => {
     if (!cameraId || !streaming) return undefined;
@@ -159,13 +160,35 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis 
       ? `${wsBase}/api/ws/tracking/${cameraId}?module=${encodeURIComponent(moduleName)}`
       : `${wsBase}/api/ws/live/${cameraId}`;
     const socket = new WebSocket(wsUrl);
+    setStatusText(useTracking ? "Connecting to camera and model..." : "Connecting to webcam...");
+    socket.onopen = () => setStatusText(useTracking ? "Camera connected; preparing detection..." : "Camera connected; waiting for frames...");
     socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
+      let payload;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        setConnected(false);
+        setStatusText("Stream sent an unreadable message");
+        return;
+      }
+      if (payload.error || ["connecting", "unavailable", "error"].includes(payload.status)) {
+        const nextDetections = useTracking ? payload.detections || null : null;
+        setPaused(Boolean(payload.paused));
+        setImage(null);
+        setDetections(nextDetections);
+        setConnected(false);
+        setStatusText(payload.message || payload.error || "Camera stream is not ready");
+        if (useTracking && nextDetections) onAnalysis?.(nextDetections);
+        return;
+      }
       if (payload.paused) {
         setPaused(true);
         setImage(null);
-        setDetections(null);
+        const nextDetections = useTracking ? payload.detections || null : null;
+        setDetections(nextDetections);
         setConnected(false);
+        setStatusText(payload.message || "Camera paused - press Play to turn on");
+        if (useTracking && nextDetections) onAnalysis?.(nextDetections);
         return;
       }
       setPaused(false);
@@ -173,9 +196,16 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis 
       setDetections(useTracking ? payload.detections || null : null);
       if (useTracking && payload.detections) onAnalysis?.(payload.detections);
       setConnected(true);
+      setStatusText(payload.message || (useTracking ? "Live tracking active" : "Live stream active"));
     };
-    socket.onerror = () => setConnected(false);
-    socket.onclose = () => setConnected(false);
+    socket.onerror = () => {
+      setConnected(false);
+      setStatusText("Live stream connection failed");
+    };
+    socket.onclose = () => {
+      setConnected(false);
+      setStatusText("Live stream disconnected");
+    };
     return () => socket.close();
   }, [cameraId, streaming, moduleName, useTracking]);
 
@@ -190,10 +220,12 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis 
         setImage(null);
         setDetections(null);
         setConnected(false);
+        setStatusText("Camera paused - press Play to turn on");
       } else {
         await setCameraPaused(cameraId, false, moduleName);
         setPaused(false);
         setStreaming(true);
+        setStatusText(useTracking ? "Connecting to camera and model..." : "Connecting to webcam...");
       }
     } catch {
       setConnected(false);
@@ -230,13 +262,7 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis 
       ) : (
         <div className={`video-placeholder ${paused ? "paused" : ""}`}>
           <Video size={36} />
-          <span>
-            {paused
-              ? "Camera paused - press Play to turn on"
-              : useTracking
-                ? "Loading webcam and YOLO model..."
-                : "Waiting for webcam"}
-          </span>
+          <span>{statusText}</span>
         </div>
       )}
       {detections && !paused && (
@@ -247,7 +273,7 @@ function LiveTile({ camera, moduleName, useTracking = false, onOpen, onAnalysis 
               <span>Max {detections.max_speed_kmph ?? 0} km/h</span>
             </>
           ) : (
-            <span>{detections.detection_count} detected</span>
+            <span>{detections.loading ? "Starting model" : `${detections.detection_count} detected`}</span>
           )}
           {detections.violations > 0 && <span className="violation-pill">{detections.violations} alert</span>}
         </div>
@@ -402,7 +428,7 @@ function SettingsPanel({ cameras, storage, selectedModule, onClose }) {
           <div className="health-row" key={camera.camera_id}>
             {camera.connected ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
             <span>{camera.camera_id}</span>
-            <small>{camera.connected ? "Connected" : "Starting / unavailable"}</small>
+            <small title={camera.last_error || ""}>{camera.connected ? `Connected${camera.backend ? ` via ${camera.backend}` : ""}` : camera.last_error || "Starting / unavailable"}</small>
           </div>
         ))}
       </div>
@@ -440,7 +466,7 @@ function ModelControls({ selectedModule, onClose }) {
 
 function LiveViewer({ camera, moduleName, useTracking, onClose }) {
   return (
-    <Modal title={`${useTracking ? "YOLO tracking" : "Webcam"} — ${camera.name || camera.camera_id}`} onClose={onClose}>
+    <Modal title={`${useTracking ? "YOLO tracking" : "Webcam"} - ${camera.name || camera.camera_id}`} onClose={onClose}>
       <div className="viewer-frame viewer-frame-large">
         <LiveTile camera={camera} moduleName={moduleName} useTracking={useTracking} onOpen={() => {}} />
       </div>

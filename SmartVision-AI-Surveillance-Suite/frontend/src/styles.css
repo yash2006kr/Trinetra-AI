@@ -548,6 +548,12 @@ h1 {
   color: #6f8193;
 }
 
+.video-placeholder span {
+  max-width: min(460px, calc(100% - 32px));
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
 .video-placeholder.paused {
   color: #b8c4d0;
   background: rgba(0, 0, 0, 0.35);
@@ -886,6 +892,10 @@ h1 {
 
 .health-row small {
   color: #66778c;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .control-stack {
