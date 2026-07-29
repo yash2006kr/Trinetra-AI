@@ -40,6 +40,7 @@ class LiveInferenceProcessor:
         ai_config = self.config.get("ai", {})
         self.speed_limit_kmph = float(self.config.get("rules", {}).get("speed_limit_kmph", 40.0))
         live_confidence = float(ai_config.get("confidence", 0.25))
+        target_labels = ai_config.get("target_labels") or []
 
         if module_name == "highway_surveillance" and HighwayDetector is not None and HighwayAnalytics is not None:
             self.detector = HighwayDetector(
@@ -48,6 +49,9 @@ class LiveInferenceProcessor:
                 image_size=int(ai_config.get("image_size", 640)),
                 device=ai_config.get("device", "auto"),
                 use_half_precision=bool(ai_config.get("use_half_precision", True)),
+                target_labels=target_labels,
+                iou=float(ai_config.get("iou", 0.45)),
+                max_detections=int(ai_config.get("max_detections", 100)),
                 enable_night_vision=bool(self.config.get("rules", {}).get("night_vision_optimization", True)),
             )
             self.analytics = HighwayAnalytics.from_config(self.config)
@@ -58,6 +62,9 @@ class LiveInferenceProcessor:
                 image_size=int(ai_config.get("image_size", 640)),
                 device=ai_config.get("device", "auto"),
                 use_half_precision=bool(ai_config.get("use_half_precision", True)),
+                target_labels=target_labels,
+                iou=float(ai_config.get("iou", 0.45)),
+                max_detections=int(ai_config.get("max_detections", 100)),
             )
             self.analytics = None
 
@@ -91,8 +98,8 @@ class LiveInferenceProcessor:
         self._frame_counter += 1
         detections = self.tracker.update(self.detector.detect(frame))
         analysis = self._build_analysis(detections, timestamp)
-        if self.module_name == "highway_surveillance":
-            self._dispatch_highway_alerts(camera_id, analysis, timestamp)
+        messages = self._build_messages(camera_id, analysis)
+        self._dispatch_alerts(camera_id, analysis, messages, timestamp)
         annotated = annotate_frame(frame, self.module_name, analysis, speed_limit_kmph=self.speed_limit_kmph)
         summary = {
             "module": self.module_name,
@@ -102,6 +109,7 @@ class LiveInferenceProcessor:
             "max_speed_kmph": analysis.get("max_speed_kmph"),
             "speed_limit_kmph": self.speed_limit_kmph if self.module_name == "highway_surveillance" else None,
             "tags": analysis.get("tags", []),
+            "messages": messages,
             "violations": sum(
                 1
                 for vehicle in analysis.get("vehicles", [])
@@ -143,29 +151,108 @@ class LiveInferenceProcessor:
             "alert_count": alert_count,
         }
 
-    def _dispatch_highway_alerts(self, camera_id: str, analysis: dict[str, Any], timestamp: float) -> None:
+    def _build_messages(self, camera_id: str, analysis: dict[str, Any]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        module_title = self.module_name.replace("_", " ").title()
+        vehicles = analysis.get("vehicles", [])
+        tags = set(analysis.get("tags", []))
+
+        def add(title: str, message: str, priority: str = "info", tag: str = "status") -> None:
+            messages.append({"title": title, "message": message, "priority": priority, "tag": tag, "camera_id": camera_id})
+
+        if self.module_name == "highway_surveillance":
+            for vehicle in vehicles:
+                label = vehicle.get("label", "Vehicle")
+                speed = float(vehicle.get("speed_kmph") or 0)
+                vehicle_tags = set(vehicle.get("tags") or [])
+                track = vehicle.get("track_id", "-")
+                if "speed_limit_warning" in vehicle_tags:
+                    add("Speed limit crossed", f"{label} track {track} reached {speed:.0f} km/h over the {self.speed_limit_kmph:.0f} km/h limit.", "critical", "speed_limit_warning")
+                if "wrong_way_detection" in vehicle_tags:
+                    add("Wrong-way movement", f"{label} track {track} is moving against the configured traffic direction.", "critical", "wrong_way_detection")
+                if "lane_violation_detection" in vehicle_tags:
+                    add("Lane zone violation", f"{label} track {track} moved outside the allowed lane zone.", "warning", "lane_violation_detection")
+                if "illegal_parking_detection" in vehicle_tags:
+                    add("Illegal parking", f"{label} track {track} has stayed almost stationary inside the scene.", "warning", "illegal_parking_detection")
+            if not messages:
+                add("Highway flow normal", f"{analysis.get('vehicle_count', 0)} vehicles tracked. Max speed {analysis.get('max_speed_kmph', 0):.0f} km/h.", "ok")
+            return messages[:6]
+
+        if self.module_name == "traffic_management":
+            count = analysis.get("vehicle_count", len(vehicles))
+            if count >= 8:
+                add("Heavy congestion", f"{count} road users are visible. Consider longer green time for this approach.", "warning", "traffic_density")
+            elif count >= 4:
+                add("Moderate traffic", f"{count} vehicles detected with steady flow.", "info", "traffic_density")
+            else:
+                add("Road segment clear", f"{count} vehicles currently detected.", "ok", "traffic_density")
+            return messages
+
+        if self.module_name == "smart_parking":
+            parked = [v for v in vehicles if v.get("label", "").lower() in {"car", "truck", "bus", "motorcycle"}]
+            add("Parking occupancy", f"{len(parked)} parked or moving vehicles visible in the lot.", "info", "parking_occupancy")
+            if len(parked) >= 10:
+                add("Lot nearly full", "Detected occupancy is high for the current view.", "warning", "parking_full")
+            return messages
+
+        if self.module_name == "retail_analytics":
+            people = [v for v in vehicles if v.get("label", "").lower() == "person"]
+            add("Customer movement", f"{len(people)} shoppers detected in the monitored area.", "info", "footfall")
+            if len(people) >= 6:
+                add("Crowded aisle", "Footfall is high; review queue or staff allocation.", "warning", "crowding")
+            return messages
+
+        if self.module_name in SECURITY_MODULES:
+            people = [v for v in vehicles if v.get("label", "").lower() == "person"]
+            if people:
+                label = {
+                    "home_security": "Person detected near home camera",
+                    "campus_security": "Unauthorized presence candidate",
+                    "smart_city_security": "Public-area person activity",
+                    "industrial_safety": "Worker/person detected in safety view",
+                    "railway_surveillance": "Person detected near rail zone",
+                    "wildlife_monitoring": "Human activity candidate in wildlife zone",
+                }.get(self.module_name, "Person detected")
+                add(label, f"{len(people)} person track(s) detected on {camera_id}.", "critical", "person_alert")
+            else:
+                add(f"{module_title} clear", "No person-triggered alert in the current frame.", "ok")
+            return messages
+
+        if vehicles:
+            add("Objects detected", f"{len(vehicles)} tracked object(s): {', '.join(sorted({v.get('label', 'object') for v in vehicles})[:4])}.", "info")
+        else:
+            add(f"{module_title} clear", "No tracked objects in the current frame.", "ok")
+        return messages
+
+    def _dispatch_alerts(self, camera_id: str, analysis: dict[str, Any], messages: list[dict[str, Any]], timestamp: float) -> None:
         cooldown = float(self.config.get("rules", {}).get("alert_cooldown_seconds", 30))
+        priority_by_name = {"ok": AlertPriority.LOW, "info": AlertPriority.MEDIUM, "warning": AlertPriority.HIGH, "critical": AlertPriority.CRITICAL}
         high_priority_tags = {
             "speed_limit_warning": ("Speed limit exceeded", AlertPriority.HIGH),
             "wrong_way_detection": ("Wrong-way vehicle", AlertPriority.CRITICAL),
             "lane_violation_detection": ("Lane violation", AlertPriority.HIGH),
             "illegal_parking_detection": ("Illegal parking", AlertPriority.MEDIUM),
             "emergency_vehicle_prioritization": ("Emergency vehicle", AlertPriority.HIGH),
+            "person_alert": ("Person activity", AlertPriority.HIGH),
+            "traffic_density": ("Traffic density change", AlertPriority.MEDIUM),
+            "parking_full": ("Parking occupancy high", AlertPriority.HIGH),
+            "crowding": ("Crowding detected", AlertPriority.HIGH),
         }
-        for tag in analysis.get("tags", []):
-            if tag not in high_priority_tags:
+        for item in messages:
+            tag = item.get("tag", "status")
+            if tag not in high_priority_tags and item.get("priority") not in {"warning", "critical"}:
                 continue
             key = f"{camera_id}:{tag}"
             if timestamp - self._last_alert_by_key.get(key, 0.0) < cooldown:
                 continue
             self._last_alert_by_key[key] = timestamp
-            title, priority = high_priority_tags[tag]
+            default_title, default_priority = high_priority_tags.get(tag, (item.get("title", "Tracking alert"), priority_by_name.get(item.get("priority"), AlertPriority.MEDIUM)))
             alert = Alert(
                 module=self.module_name,
                 camera_id=camera_id,
-                title=title,
-                message=f"{title} on {camera_id}. Max speed {analysis.get('max_speed_kmph', 0)} km/h (limit {self.speed_limit_kmph:.0f}).",
-                priority=priority,
+                title=item.get("title") or default_title,
+                message=item.get("message") or default_title,
+                priority=default_priority,
                 metadata=analysis,
             )
             self.repository.create_alert(alert)

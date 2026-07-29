@@ -9,10 +9,11 @@ import shutil
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
+from uuid import uuid4
 
 import cv2
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from shared_core.alert_engine.alerts import Alert, AlertPriority
@@ -28,7 +29,19 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
     repo = repository or EventRepository.from_config(config)
     manager = camera_manager or CameraManager()
     camera_catalog = {item["camera_id"]: item for item in config.get("cameras", [])}
+    video_jobs: dict[str, Path] = {}
     router = APIRouter(prefix="/api", tags=["dashboard"])
+
+    def camera_status(camera_id: str, status: str, message: str, health: Any | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "camera_id": camera_id,
+            "status": status,
+            "message": message,
+            "paused": status == "paused",
+        }
+        if health is not None:
+            payload["health"] = asdict(health)
+        return payload
 
     @router.get("/health")
     def health() -> dict[str, Any]:
@@ -74,6 +87,21 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
             "created_ts": row.created_ts,
         }
 
+    @router.post("/videos", dependencies=[Depends(require_api_key)])
+    async def upload_video(file: Annotated[UploadFile, File(...)]) -> dict[str, Any]:
+        suffix = Path(file.filename or "sample.mp4").suffix.lower()
+        if suffix not in {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}:
+            raise HTTPException(status_code=400, detail="Unsupported video format")
+        upload_dir = Path("data") / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        job_id = uuid4().hex
+        target = upload_dir / f"{job_id}{suffix}"
+        with target.open("wb") as handle:
+            while chunk := await file.read(1024 * 1024):
+                handle.write(chunk)
+        video_jobs[job_id] = target
+        return {"job_id": job_id, "filename": file.filename, "path": str(target)}
+
     @router.get("/cameras", dependencies=[Depends(require_api_key)])
     def cameras() -> list[dict[str, Any]]:
         health_by_id = {health.camera_id: health for health in manager.health()}
@@ -91,6 +119,8 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
                     "last_frame_ts": health.last_frame_ts if health else None,
                     "frames_read": health.frames_read if health else 0,
                     "failures": health.failures if health else 0,
+                    "backend": health.backend if health else None,
+                    "last_error": health.last_error if health else None,
                     "active": camera_id == active_id,
                 }
             )
@@ -145,24 +175,37 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
         try:
             while True:
                 health = next((item for item in manager.health() if item.camera_id == camera_id), None)
-                if health is None or not health.running:
-                    await websocket.send_text(json.dumps({"camera_id": camera_id, "paused": True}))
+                if health is None:
+                    await websocket.send_text(json.dumps(camera_status(camera_id, "unavailable", "Camera is not configured.")))
+                    await asyncio.sleep(0.5)
+                    continue
+                if not health.running:
+                    await websocket.send_text(json.dumps(camera_status(camera_id, "paused", "Camera is paused.", health)))
                     await asyncio.sleep(0.3)
                     continue
 
                 ok, frame, ts = manager.read(camera_id)
                 if ok and frame is not None:
-                    _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    encoded, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                    if not encoded:
+                        await websocket.send_text(json.dumps(camera_status(camera_id, "error", "Could not encode webcam frame.", health)))
+                        await asyncio.sleep(0.2)
+                        continue
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "camera_id": camera_id,
+                                "status": "live",
+                                "message": "Live camera stream active.",
                                 "timestamp": ts,
                                 "paused": False,
                                 "jpeg_base64": base64.b64encode(buffer).decode("ascii"),
                             }
                         )
                     )
+                else:
+                    message = health.last_error or "Waiting for the camera to deliver frames."
+                    await websocket.send_text(json.dumps(camera_status(camera_id, "connecting", message, health)))
                 await asyncio.sleep(0.05)
         except WebSocketDisconnect:
             return
@@ -176,14 +219,49 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
         try:
             while True:
                 health = next((item for item in manager.health() if item.camera_id == camera_id), None)
-                if health is None or not health.running:
+                if health is None:
                     await websocket.send_text(
                         json.dumps(
                             {
-                                "camera_id": camera_id,
+                                **camera_status(camera_id, "unavailable", "Camera is not configured."),
                                 "module": module,
-                                "paused": True,
-                                "detections": None,
+                                "detections": {
+                                    "detection_count": 0,
+                                    "model_ready": processor.detector.loaded,
+                                    "messages": [
+                                        {
+                                            "title": "Camera unavailable",
+                                            "message": "This camera is not present in the backend configuration.",
+                                            "priority": "warning",
+                                            "tag": "camera_unavailable",
+                                            "camera_id": camera_id,
+                                        }
+                                    ],
+                                },
+                            }
+                        )
+                    )
+                    await asyncio.sleep(0.5)
+                    continue
+                if not health.running:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                **camera_status(camera_id, "paused", "Camera is paused.", health),
+                                "module": module,
+                                "detections": {
+                                    "detection_count": 0,
+                                    "model_ready": processor.detector.loaded,
+                                    "messages": [
+                                        {
+                                            "title": "Camera paused",
+                                            "message": "Press Play to resume this camera.",
+                                            "priority": "info",
+                                            "tag": "camera_paused",
+                                            "camera_id": camera_id,
+                                        }
+                                    ],
+                                },
                             }
                         )
                     )
@@ -203,10 +281,25 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
                                         {
                                             "camera_id": camera_id,
                                             "module": module,
+                                            "status": "loading_model",
+                                            "message": "Camera is live. Loading YOLO model...",
                                             "timestamp": ts,
                                             "paused": False,
                                             "jpeg_base64": base64.b64encode(buf).decode("ascii"),
-                                            "detections": {"detection_count": 0, "loading": True},
+                                            "detections": {
+                                                "detection_count": 0,
+                                                "loading": True,
+                                                "model_ready": False,
+                                                "messages": [
+                                                    {
+                                                        "title": "Loading AI model",
+                                                        "message": "Live video is available; detection will start after YOLO finishes loading.",
+                                                        "priority": "info",
+                                                        "tag": "model_loading",
+                                                        "camera_id": camera_id,
+                                                    }
+                                                ],
+                                            },
                                         }
                                     )
                                 )
@@ -225,13 +318,32 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
                             2,
                             cv2.LINE_AA,
                         )
-                        detection_summary = {"detection_count": 0, "error": str(exc), "model_ready": False}
-                    _, buffer = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+                        detection_summary = {
+                            "detection_count": 0,
+                            "error": str(exc),
+                            "model_ready": False,
+                            "messages": [
+                                {
+                                    "title": "Detection error",
+                                    "message": str(exc),
+                                    "priority": "critical",
+                                    "tag": "detection_error",
+                                    "camera_id": camera_id,
+                                }
+                            ],
+                        }
+                    encoded, buffer = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+                    if not encoded:
+                        await websocket.send_text(json.dumps(camera_status(camera_id, "error", "Could not encode tracking frame.", health)))
+                        await asyncio.sleep(0.2)
+                        continue
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "camera_id": camera_id,
                                 "module": module,
+                                "status": "tracking",
+                                "message": "Live tracking active.",
                                 "timestamp": ts,
                                 "paused": False,
                                 "jpeg_base64": base64.b64encode(buffer).decode("ascii"),
@@ -239,9 +351,108 @@ def create_dashboard_router(camera_manager: CameraManager | None = None, reposit
                             }
                         )
                     )
+                else:
+                    message = health.last_error or "Waiting for the camera to deliver frames."
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                **camera_status(camera_id, "connecting", message, health),
+                                "module": module,
+                                "detections": {
+                                    "detection_count": 0,
+                                    "model_ready": processor.detector.loaded,
+                                    "messages": [
+                                        {
+                                            "title": "Camera starting",
+                                            "message": message,
+                                            "priority": "warning",
+                                            "tag": "camera_connecting",
+                                            "camera_id": camera_id,
+                                        }
+                                    ],
+                                },
+                            }
+                        )
+                    )
                 await asyncio.sleep(0.05)
         except WebSocketDisconnect:
             return
+
+    @router.websocket("/ws/video/{job_id}")
+    async def video_tracking(websocket: WebSocket, job_id: str, module: str = "highway_surveillance") -> None:
+        """Run the same live detector over an uploaded video file and stream annotated frames."""
+
+        await websocket.accept()
+        path = video_jobs.get(job_id)
+        if not path or not path.exists():
+            await websocket.send_text(json.dumps({"job_id": job_id, "error": "Uploaded video was not found"}))
+            await websocket.close()
+            return
+
+        processor = LiveInferenceProcessor.get(module)
+        processor.reset_tracking()
+        capture = cv2.VideoCapture(str(path))
+        if not capture.isOpened():
+            await websocket.send_text(json.dumps({"job_id": job_id, "error": "Uploaded video could not be opened by OpenCV"}))
+            await websocket.close()
+            return
+        fps = capture.get(cv2.CAP_PROP_FPS) or 15.0
+        frame_delay = min(0.12, max(0.025, 1.0 / max(fps, 1.0)))
+        frame_index = 0
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    await websocket.send_text(json.dumps({"job_id": job_id, "module": module, "complete": True}))
+                    break
+                timestamp = time.time()
+                output = frame
+                detection_summary: dict[str, Any] = {"detection_count": 0, "model_ready": processor.detector.loaded}
+                try:
+                    output, detection_summary = await asyncio.to_thread(processor.process, frame, f"file_{job_id[:8]}", timestamp)
+                    detection_summary["model_ready"] = True
+                    detection_summary["frame_index"] = frame_index
+                    detection_summary["source"] = "uploaded_video"
+                except Exception as exc:
+                    output = frame.copy()
+                    cv2.putText(output, f"Detection error: {exc}"[:80], (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
+                    detection_summary = {
+                        "detection_count": 0,
+                        "error": str(exc),
+                        "model_ready": False,
+                        "frame_index": frame_index,
+                        "messages": [
+                            {
+                                "title": "Detection error",
+                                "message": str(exc),
+                                "priority": "critical",
+                                "tag": "detection_error",
+                                "camera_id": f"file_{job_id[:8]}",
+                            }
+                        ],
+                    }
+                encoded, buffer = cv2.imencode(".jpg", output, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+                if not encoded:
+                    await websocket.send_text(json.dumps({"job_id": job_id, "module": module, "error": "Could not encode analyzed video frame"}))
+                    break
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "job_id": job_id,
+                            "module": module,
+                            "timestamp": timestamp,
+                            "complete": False,
+                            "jpeg_base64": base64.b64encode(buffer).decode("ascii"),
+                            "detections": detection_summary,
+                        }
+                    )
+                )
+                frame_index += 1
+                await asyncio.sleep(frame_delay)
+        except WebSocketDisconnect:
+            return
+        finally:
+            capture.release()
 
     @router.websocket("/ws/alerts")
     async def alert_stream(websocket: WebSocket) -> None:

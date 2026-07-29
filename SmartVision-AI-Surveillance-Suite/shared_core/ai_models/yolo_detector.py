@@ -28,6 +28,9 @@ class YOLODetector(ObjectDetector):
         device: str = "auto",
         use_half_precision: bool = True,
         labels: dict[int, str] | None = None,
+        target_labels: list[str] | set[str] | None = None,
+        iou: float = 0.45,
+        max_detections: int = 100,
         graceful: bool = True,
     ) -> None:
         self.model_path = model_path
@@ -35,6 +38,9 @@ class YOLODetector(ObjectDetector):
         self.image_size = image_size
         self.runtime = resolve_device(device, use_half_precision)
         self.labels = labels or {}
+        self.target_labels = {label.lower() for label in target_labels} if target_labels else set()
+        self.iou = iou
+        self.max_detections = max_detections
         self.graceful = graceful
         self._model: Any | None = None
         self.logger = setup_logger("shared_core.yolo", "logs")
@@ -65,9 +71,11 @@ class YOLODetector(ObjectDetector):
         results = self._model.predict(
             frame,
             conf=self.confidence,
+            iou=self.iou,
             imgsz=self.image_size,
             device=self.runtime.device,
             half=self.runtime.half_precision,
+            max_det=self.max_detections,
             verbose=False,
         )
         detections: list[Detection] = []
@@ -81,5 +89,7 @@ class YOLODetector(ObjectDetector):
                 conf = float(box.conf[0].detach().cpu())
                 class_id = int(box.cls[0].detach().cpu())
                 label = self.labels.get(class_id) or names.get(class_id, str(class_id))
+                if self.target_labels and label.lower() not in self.target_labels:
+                    continue
                 detections.append(Detection(tuple(xyxy), conf, class_id, label))
         return detections

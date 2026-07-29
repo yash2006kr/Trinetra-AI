@@ -129,10 +129,17 @@ class HighwayAnalytics:
         history.append((timestamp, center))
         if len(history) < 2:
             return 0.0
-        # Use the last two samples for responsive live speed (not the full deque span).
-        old_ts, old_center = history[-2]
+        old_ts, old_center = history[0]
+        for sample_ts, sample_center in reversed(history):
+            if timestamp - sample_ts >= 0.45:
+                old_ts, old_center = sample_ts, sample_center
+                break
         dt = max(1e-6, timestamp - old_ts)
+        if dt < 0.2:
+            return 0.0
         distance_px = ((center[0] - old_center[0]) ** 2 + (center[1] - old_center[1]) ** 2) ** 0.5
+        if distance_px < 2.0:
+            return 0.0
         meters = distance_px / max(1e-6, self.rules.pixels_per_meter)
         return meters / dt * 3.6
 
