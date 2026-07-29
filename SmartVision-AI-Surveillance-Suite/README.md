@@ -72,6 +72,54 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+## Live Demo Workflow
+
+Start both services from the project root:
+
+```powershell
+.\.venv\Scripts\uvicorn.exe api_gateway.main:app --host 127.0.0.1 --port 8000
+```
+
+In another terminal:
+
+```powershell
+cd frontend
+npm run dev -- --host 127.0.0.1
+```
+
+Open the dashboard:
+
+```text
+http://127.0.0.1:5173
+```
+
+Demo controls:
+
+- **Live Video + YOLO Detection** shows the active webcam stream.
+- **Detection ON/OFF** switches between plain webcam video and OpenCV/YOLO annotated video.
+- **Green boxes** mean normal detections.
+- **Red boxes** mean alert-worthy detections, such as highway speed-limit warnings or security-zone style violations.
+- In **Highway Surveillance**, the video HUD shows speed limit and max estimated speed. The default demo limit is intentionally low so movement can trigger visible warnings.
+- **Webcam selector** switches between configured webcams; the backend activates one webcam at a time to avoid camera-device conflicts.
+- **Expand icon** opens a larger live viewer.
+- **Settings** shows backend API info, storage root, and camera health.
+- **Model Controls** shows confidence, recording, and edge-AI controls for demo presentation.
+- **Test Alert** inserts a sample alert row so the alerts panel can be demonstrated.
+- **Test Event** inserts a sample event row so event filtering, timeline, and details can be demonstrated.
+
+Live data path:
+
+```text
+Webcam / RTSP camera
+  -> OpenCV frame capture
+  -> YOLO detector + tracker
+  -> OpenCV overlay drawing
+  -> FastAPI WebSocket
+  -> React dashboard image tile
+```
+
+The plain stream endpoint is `WS /api/ws/live/{camera_id}`. The annotated AI stream is `WS /api/ws/tracking/{camera_id}?module=highway_surveillance`.
+
 ## Run A Module Independently
 
 ```powershell
