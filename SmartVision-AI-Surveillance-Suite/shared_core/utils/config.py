@@ -53,6 +53,13 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_list(name: str, default: list[str] | None = None) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default or []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def load_config(module_config: str | Path | None = None) -> dict[str, Any]:
     """Load shared defaults, optional module YAML, then environment overrides."""
 
@@ -80,5 +87,9 @@ def load_config(module_config: str | Path | None = None) -> dict[str, Any]:
 
     config.setdefault("dashboard", {})
     config["dashboard"]["api_key"] = os.getenv("SMARTVISION_API_KEY", config["dashboard"].get("api_key", "dev-token"))
+    config["dashboard"]["cors_origins"] = env_list(
+        "DASHBOARD_CORS_ORIGINS",
+        list(config["dashboard"].get("cors_origins", ["*"])),
+    )
 
     return config
