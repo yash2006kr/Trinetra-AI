@@ -68,7 +68,8 @@ def load_config(module_config: str | Path | None = None) -> dict[str, Any]:
     config = deep_merge(default_config, load_yaml(module_config))
 
     config.setdefault("app", {})
-    config["app"]["environment"] = os.getenv("SMARTVISION_ENV", config["app"].get("environment", "dev"))
+    environment = os.getenv("SMARTVISION_ENV", config["app"].get("environment", "dev"))
+    config["app"]["environment"] = environment
     config["app"]["database_url"] = os.getenv(
         "DATABASE_URL",
         config["app"].get("database_url", "sqlite:///data/smartvision.db"),
@@ -90,6 +91,22 @@ def load_config(module_config: str | Path | None = None) -> dict[str, Any]:
     config["dashboard"]["cors_origins"] = env_list(
         "DASHBOARD_CORS_ORIGINS",
         list(config["dashboard"].get("cors_origins", ["*"])),
+    )
+
+    camera_source = os.getenv("SMARTVISION_CAMERA_SOURCE")
+    cameras = config.get("cameras", [])
+    if cameras:
+        if camera_source:
+            cameras[0]["source"] = camera_source
+            cameras[0]["name"] = os.getenv("SMARTVISION_CAMERA_NAME", cameras[0].get("name", "Primary Camera"))
+            cameras[0]["enabled"] = True
+        elif environment == "production" and str(cameras[0].get("source", "")).isdigit():
+            cameras[0]["source"] = "demo://highway"
+            cameras[0]["name"] = "Render Demo Highway Feed"
+            cameras[0]["enabled"] = True
+    config["app"]["demo_mode"] = env_bool(
+        "SMARTVISION_DEMO_MODE",
+        any(str(camera.get("source", "")).startswith("demo://") for camera in cameras),
     )
 
     return config

@@ -72,6 +72,7 @@ class LiveInferenceProcessor:
         self.repository = EventRepository.from_config(self.config)
         self._last_alert_by_key: dict[str, float] = {}
         self._frame_counter = 0
+        self.demo_mode = bool(self.config.get("app", {}).get("demo_mode", False))
         self._warmup_detector()
 
     def _warmup_detector(self) -> None:
@@ -96,7 +97,10 @@ class LiveInferenceProcessor:
     def process(self, frame: np.ndarray, camera_id: str, timestamp: float | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         timestamp = timestamp or time.time()
         self._frame_counter += 1
-        detections = self.tracker.update(self.detector.detect(frame))
+        if self.demo_mode:
+            detections = self._demo_detections(frame, timestamp)
+        else:
+            detections = self.tracker.update(self.detector.detect(frame))
         analysis = self._build_analysis(detections, timestamp)
         messages = self._build_messages(camera_id, analysis)
         self._dispatch_alerts(camera_id, analysis, messages, timestamp)
@@ -121,6 +125,29 @@ class LiveInferenceProcessor:
             ),
         }
         return annotated, summary
+
+    def _demo_detections(self, frame: np.ndarray, timestamp: float) -> list[Detection]:
+        height, width = frame.shape[:2]
+        phase = self._frame_counter
+        labels = ["car", "car", "truck"] if self.module_name in {"highway_surveillance", "traffic_management", "smart_parking"} else ["person", "car"]
+        boxes: list[Detection] = []
+        for idx, label in enumerate(labels):
+            box_w = int(width * (0.13 if label != "truck" else 0.17))
+            box_h = int(height * (0.11 if label != "truck" else 0.13))
+            x = int((width * (0.16 + idx * 0.22) + phase * (5 + idx)) % (width + box_w) - box_w / 2)
+            y = int(height * (0.58 + idx * 0.09))
+            x1 = max(8, min(width - box_w - 8, x))
+            y1 = max(80, min(height - box_h - 8, y))
+            detection = Detection(
+                bbox=(float(x1), float(y1), float(x1 + box_w), float(y1 + box_h)),
+                confidence=0.91 - idx * 0.05,
+                class_id=idx,
+                label=label,
+                tracker_id=idx + 1,
+                metadata={"demo": True, "timestamp": timestamp},
+            )
+            boxes.append(detection)
+        return boxes
 
     def _build_analysis(self, detections: list[Detection], timestamp: float) -> dict[str, Any]:
         if self.module_name == "highway_surveillance" and self.analytics is not None:

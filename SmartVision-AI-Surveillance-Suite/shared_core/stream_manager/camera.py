@@ -20,6 +20,10 @@ def normalize_source(source: str | int) -> str | int:
     return source
 
 
+def is_demo_source(source: str | int) -> bool:
+    return isinstance(source, str) and source.lower().startswith("demo://")
+
+
 @dataclass(slots=True)
 class CameraConfig:
     camera_id: str
@@ -144,6 +148,10 @@ class ThreadedCamera:
         return None
 
     def _capture_loop(self) -> None:
+        if is_demo_source(self.config.source):
+            self._demo_loop()
+            return
+
         while not self._stop.is_set():
             try:
                 with self._lock:
@@ -192,3 +200,73 @@ class ThreadedCamera:
                 self._consecutive_read_failures = 0
                 self._frames_read += 1
             time.sleep(max(0.0, 1.0 / max(self.config.fps, 1.0) - 0.001))
+
+    def _demo_loop(self) -> None:
+        frame_index = 0
+        width = self.config.width or 960
+        height = self.config.height or 540
+        fps = max(self.config.fps, 1.0)
+        with self._lock:
+            self._backend_name = "Synthetic Demo"
+            self._last_error = None
+
+        while not self._stop.is_set():
+            frame = self._render_demo_frame(frame_index, width, height)
+            now = time.time()
+            with self._lock:
+                self._latest = frame
+                self._latest_ts = now
+                self._connected = True
+                self._last_error = None
+                self._consecutive_read_failures = 0
+                self._frames_read += 1
+            frame_index += 1
+            time.sleep(max(0.0, 1.0 / fps - 0.001))
+
+    def _render_demo_frame(self, frame_index: int, width: int, height: int) -> np.ndarray:
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:] = (34, 42, 36)
+        horizon = int(height * 0.32)
+        cv2.rectangle(frame, (0, 0), (width, horizon), (40, 53, 64), -1)
+        cv2.rectangle(frame, (0, horizon), (width, height), (42, 48, 42), -1)
+
+        road_top = int(width * 0.37)
+        road_bottom_left = int(width * 0.06)
+        road_bottom_right = int(width * 0.94)
+        road_top_right = int(width * 0.63)
+        road = np.array(
+            [(road_top, horizon), (road_top_right, horizon), (road_bottom_right, height), (road_bottom_left, height)],
+            dtype=np.int32,
+        )
+        cv2.fillConvexPoly(frame, road, (56, 58, 61))
+
+        for lane_x in (0.42, 0.5, 0.58):
+            x1 = int(width * lane_x)
+            x2 = int(width * (lane_x + (0.06 if lane_x < 0.5 else -0.06)))
+            cv2.line(frame, (x1, horizon + 12), (x2, height), (180, 180, 160), 2, cv2.LINE_AA)
+
+        car_specs = [
+            (0.18, 0.72, 120, 58, (50, 170, 245)),
+            (0.55, 0.55, 100, 50, (70, 210, 110)),
+            (0.74, 0.78, 130, 62, (220, 80, 70)),
+        ]
+        for idx, (base_x, base_y, car_w, car_h, color) in enumerate(car_specs):
+            travel = ((frame_index * (2 + idx) + idx * 90) % (width + car_w)) - car_w
+            x = int((base_x * width + travel * 0.35) % (width + car_w) - car_w / 2)
+            y = int(base_y * height + np.sin((frame_index + idx * 18) / 20.0) * 8)
+            cv2.rectangle(frame, (x, y), (x + car_w, y + car_h), color, -1)
+            cv2.rectangle(frame, (x + 14, y + 9), (x + car_w - 18, y + 28), (30, 40, 50), -1)
+            cv2.circle(frame, (x + 22, y + car_h), 10, (18, 18, 18), -1)
+            cv2.circle(frame, (x + car_w - 22, y + car_h), 10, (18, 18, 18), -1)
+
+        cv2.putText(
+            frame,
+            "RENDER DEMO FEED - use SMARTVISION_CAMERA_SOURCE for RTSP/IP camera",
+            (24, 34),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            (235, 240, 245),
+            2,
+            cv2.LINE_AA,
+        )
+        return frame
