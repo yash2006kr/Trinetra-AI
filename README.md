@@ -46,7 +46,7 @@ Open the dashboard:
 http://127.0.0.1:5173
 ```
 
-## What To Click In The Demo
+##  What To Click In The Demo
 
 1. Select `highway_surveillance` from the module list.
 2. Use the webcam selector in the Live Video panel to choose your camera.
